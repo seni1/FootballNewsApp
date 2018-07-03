@@ -9,16 +9,16 @@ package com.example.android.footballnewsapp;
 public class Football {
 
     /** Type of the news: article of liveblog */
-    public String type;
+    private String type;
 
     /** Name of the Section of the news */
-    public String section;
+    private String section;
 
     /** Date of the news */
-    public String date;
+    private String date;
 
     /** Title of the aritcle or liveblog */
-    public String title;
+    private String title;
 
     /** Website URL of the earthquake */
     private String url;
@@ -31,13 +31,14 @@ public class Football {
      * @param newsDate is the time in milliseconds (from the Epoch) when the
      */
 
-    public Football(String typeNews, String sectionName, String newsDate, String webTitle) {
+    public Football(String typeNews, String sectionName, String newsDate, String webTitle, String Url) {
 
         //Initializing the variables
         type = typeNews;
         section = sectionName;
         date = newsDate;
         title = webTitle;
+        url = Url;
     }
 
     /**

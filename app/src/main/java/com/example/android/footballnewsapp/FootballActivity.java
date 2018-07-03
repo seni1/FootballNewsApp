@@ -1,15 +1,26 @@
 package com.example.android.footballnewsapp;
 
 import android.app.Activity;
+import android.app.LoaderManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.AsyncTask;
+import android.preference.PreferenceManager;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.Log;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.AdapterView;
+import android.widget.ListAdapter;
 import android.widget.ListView;
 import android.widget.TextView;
 
@@ -27,224 +38,178 @@ import java.net.URL;
 import java.nio.charset.Charset;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.List;
 
-public class FootballActivity extends AppCompatActivity {
-
-    /**
-     * Tag for the log messages
-     */
-    public static final String LOG_TAG = FootballActivity.class.getSimpleName();
+public class FootballActivity extends AppCompatActivity implements LoaderCallbacks<List<Football>> {
 
     /**
-     * URL to query the GUARDIAN dataset for football news
+     * Constant value for the news loader ID. We can choose any integer.
+     * This really only comes into play if you're using multiple loaders.
      */
-    private static final String FOOTBALL_REQUEST_URL =
+    private static final int NEWS_LOADER_ID = 1;
+
+    /** Adapter for the list of news */
+    private FootballAdapter adapter;
+
+    /** URL for news data from the Guardian API */
+    private static final String GUARDIAN_REQUEST_URL =
             "https://content.guardianapis.com/football?api-key=14153493-2fcc-42d8-9cc6-5a202222e671";
+
+    private static final String GUARDIAN_API_KEY = "test";
+
+    private static final String GUARDIAN_SHOW_TAGS = "contributor";
+
+    private static final String GUARDIAN_THUMBNAIL = "thumbnail";
+
+    private static final String GUARDIAN_PAGE_SIZE = "20";
+
+    /** TextView that is displayed when the list is empty */
+    private TextView mEmptyStateTextView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.football_list_item);
+        setContentView(R.layout.football_activity);
 
-        // Kick off an {@link AsyncTask} to perform the network request
-        FootballAsyncTask task = new FootballAsyncTask();
-        task.execute();
+        // Find a reference to the {@link ListView} in the layout
+        ListView newsListView = findViewById(R.id.list);
+
+        // Create a new adapter that takes an empty list of news as input
+        adapter = new FootballAdapter(this, new ArrayList<Football>());
+
+        // Set the adapter on the {@link ListView}
+        // so the list can be populated in the user interface
+        newsListView.setAdapter(adapter);
+
+        mEmptyStateTextView = findViewById(R.id.empty_view);
+        footballListView.setEmptyView(mEmptyStateTextView);
+
+        // Set an item click listener on the ListView, which sends an intent to a web browser
+        // to open a website with more information about the selected news.
+        newsListView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+            @Override
+            public void onItemClick(AdapterView<?> adapterView, View view, int position, long l) {
+                // Find the current news that was clicked on
+                News currentNews = mAdapter.getItem(position);
+
+                // Convert the String URL into a URI object (to pass into the Intent constructor)
+                Uri newsUri = Uri.parse(currentNews.getUrl());
+
+                // Create a new intent to view the news URI
+                Intent websiteIntent = new Intent(Intent.ACTION_VIEW, newsUri);
+
+                // Verify it resolves
+                PackageManager packageManager = getPackageManager();
+                List<ResolveInfo> activities = packageManager.queryIntentActivities(websiteIntent, 0);
+                boolean isIntentSafe = activities.size() > 0;
+
+                // Start an activity if it's safe
+                if (isIntentSafe) {
+                    startActivity(websiteIntent);
+                }
+            }
+        });
+
+        // Get a reference to the ConnectivityManager to check state of network connectivity
+        ConnectivityManager connMgr = (ConnectivityManager)
+                getSystemService(Context.CONNECTIVITY_SERVICE);
+
+        // Get details on the currently active default data network
+        NetworkInfo networkInfo = connMgr.getActiveNetworkInfo();
+
+        // If there is a network connection, fetch data
+        if (networkInfo != null && networkInfo.isConnected()) {
+            // Get a reference to the LoaderManager, in order to interact with loaders.
+            LoaderManager loaderManager = getLoaderManager();
+
+            // Initialize the loader. Pass in the int ID constant defined above and pass in null for
+            // the bundle. Pass in this activity for the LoaderCallbacks parameter (which is valid
+            // because this activity implements the LoaderCallbacks interface).
+            loaderManager.initLoader(NEWS_LOADER_ID, null, this);
+        } else {
+            // Otherwise, display error
+            // First, hide loading indicator so error message will be visible
+            View loadingIndicator = findViewById(R.id.loading_indicator);
+            loadingIndicator.setVisibility(View.GONE);
+            // Update empty state with no connection error message
+            mEmptyStateTextView.setText(R.string.no_internet_connection);
+        }
     }
 
-    /**
-     * Update the screen to display information from the given {@link Football}.
-     */
-    private void updateUi(Football football) {
-        // Display the Type of News in the UI
-        TextView typeTextView = findViewById(R.id.type_tv);
-        typeTextView.setText(football.type);
+    @Override
+    public Loader<List<News>> onCreateLoader(int i, Bundle bundle) {
+        SharedPreferences sharedPrefs = PreferenceManager.getDefaultSharedPreferences(this);
 
-        // Display the Section in the UI
-        TextView sectionTextView = findViewById(R.id.section_tv);
-        sectionTextView.setText(football.section);
+        // getString retrieves a String value from the preferences. The second parameter is the default value for this preference.
+        String section  = sharedPrefs.getString(
+                getString(R.string.settings_section_key),
+                getString(R.string.settings_section_default)
+        );
 
-        // Display the Title in the UI
-        TextView titleTextView = findViewById(R.id.title_tv);
-        titleTextView.setText(football.title);
+        String orderBy  = sharedPrefs.getString(
+                getString(R.string.settings_order_by_key),
+                getString(R.string.settings_order_by_default)
+        );
 
-        // Display the Date in the UI
-        TextView dateTextView = findViewById(R.id.date_tv);
-        dateTextView.setText(football.date);
+        // parse breaks apart the URI string that's passed into its parameter
+        Uri baseUri = Uri.parse(GUARDIAN_REQUEST_URL);
+
+        // buildUpon prepares the baseUri that we just parsed so we can add query parameters to it
+        Uri.Builder uriBuilder = baseUri.buildUpon();
+
+        // Append query parameter and its value
+        uriBuilder.appendQueryParameter(getString(R.string.guardian_section), section);
+        uriBuilder.appendQueryParameter(getString(R.string.guardian_show_tags), GUARDIAN_SHOW_TAGS);
+        uriBuilder.appendQueryParameter(getString(R.string.guardian_page_size), GUARDIAN_PAGE_SIZE);
+        uriBuilder.appendQueryParameter(getString(R.string.guardian_fields), GUARDIAN_THUMBNAIL);
+        uriBuilder.appendQueryParameter(getString(R.string.guardian_order_by), orderBy);
+        uriBuilder.appendQueryParameter(getString(R.string.guardian_api_key), GUARDIAN_API_KEY);
+
+        // Return the completed uri
+        return new NewsLoader(this, uriBuilder.toString());
     }
 
-//    /**
-//     * Returns a formatted date and time string for when the earthquake happened.
-//     */
-//    private String getDateString(long timeInMilliseconds) {
-//        SimpleDateFormat formatter = new SimpleDateFormat("EEE, d MMM yyyy 'at' HH:mm:ss z");
-//        return formatter.format(timeInMilliseconds);
-//    }
+    @Override
+    public void onLoadFinished(Loader<List<News>> loader, List<News> allNews) {
+        // Hide loading indicator because the data has been loaded
+        View loadingIndicator = findViewById(R.id.loading_indicator);
+        loadingIndicator.setVisibility(View.GONE);
 
-//    /**
-//     * Return the display string for whether or not there was a tsunami alert for an earthquake.
-//     */
-//    private String getTsunamiAlertString(int tsunamiAlert) {
-//        switch (tsunamiAlert) {
-//            case 0:
-//                return getString(R.string.alert_no);
-//            case 1:
-//                return getString(R.string.alert_yes);
-//            default:
-//                return getString(R.string.alert_not_available);
-//        }
-//    }
+        // Set empty state text to display "No news found."
+        mEmptyStateTextView.setText(R.string.no_news);
 
-    /**
-     * {@link AsyncTask} to perform the network request on a background thread, and then
-     * update the UI with the first earthquake in the response.
-     */
-    private class FootballAsyncTask extends AsyncTask<URL, Void, Football> {
+        // Clear the adapter of previous news data
+        mAdapter.clear();
 
-        @Override
-        protected Football doInBackground(URL... urls) {
-
-            // Create URL object
-            URL url = createUrl(FOOTBALL_REQUEST_URL);
-
-            // Perform HTTP request to the URL and receive a JSON response back
-            String jsonResponse = "";
-            try {
-                jsonResponse = makeHttpRequest(url);
-
-            } catch (IOException e) {
-                // TODO Handle the IOException
-                Log.e(LOG_TAG, "Problem making the HTTP request.", e);
-            }
-
-            // Extract relevant fields from the JSON response and create an {@link Event} object
-            Football football = extractFeatureFromJson(jsonResponse);
-
-            // Return the {@link Event} object as the result fo the {@link TsunamiAsyncTask}
-            return football;
+        // If there is a valid list of {@link News}, then add them to the adapter's
+        // data set. This will trigger the ListView to update.
+        if (allNews != null && !allNews.isEmpty()) {
+            mAdapter.addAll(allNews);
         }
+    }
 
-        /**
-         * Update the screen with the given earthquake (which was the result of the
-         * {@link FootballAsyncTask}).
-         */
-        @Override
-        protected void onPostExecute(Football football) {
-            if (football == null) {
-                return;
-            }
+    @Override
+    public void onLoaderReset(Loader<List<News>> loader) {
+        // Loader reset, so we can clear out our existing data.
+        mAdapter.clear();
+    }
 
-            updateUi(football);
+    @Override
+    // This method initialize the contents of the Activity's options menu.
+    public boolean onCreateOptionsMenu(Menu menu) {
+        // Inflate the Options Menu we specified in XML
+        getMenuInflater().inflate(R.menu.main, menu);
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        int id = item.getItemId();
+        if (id == R.id.action_settings) {
+            Intent settingsIntent = new Intent(this, SettingsActivity.class);
+            startActivity(settingsIntent);
+            return true;
         }
-
-        /**
-         * Returns new URL object from the given string URL.
-         */
-        private URL createUrl(String stringUrl) {
-            URL url = null;
-            try {
-                url = new URL(stringUrl);
-            } catch (MalformedURLException exception) {
-                Log.e(LOG_TAG, "Error with creating URL", exception);
-                return null;
-            }
-            return url;
-        }
-
-        /**
-         * Make an HTTP request to the given URL and return a String as the response.
-         */
-        private String makeHttpRequest(URL url) throws IOException {
-            String jsonResponse = "";
-
-            // If the URL is null, then return early.
-            if (url == null) {
-                return jsonResponse;
-            }
-
-            HttpURLConnection urlConnection = null;
-            InputStream inputStream = null;
-            try {
-                urlConnection = (HttpURLConnection) url.openConnection();
-                urlConnection.setRequestMethod("GET");
-                urlConnection.setReadTimeout(10000 /* milliseconds */);
-                urlConnection.setConnectTimeout(15000 /* milliseconds */);
-                urlConnection.connect();
-
-                // If the request was successful (response code 200),
-                // then read the input stream and parse the response.
-                if (urlConnection.getResponseCode() == 200) {
-                    inputStream = urlConnection.getInputStream();
-                    jsonResponse = readFromStream(inputStream);
-                } else {
-                    Log.e(LOG_TAG, "Error response code: " + urlConnection.getResponseCode());
-
-                }
-
-            } catch (IOException e) {
-                // TODO: Handle the exception
-                Log.e(LOG_TAG, "Problem retrieving the football JSON results.", e);
-            } finally {
-                if (urlConnection != null) {
-                    urlConnection.disconnect();
-                }
-                if (inputStream != null) {
-                    // function must handle java.io.IOException here
-                    inputStream.close();
-                }
-            }
-            return jsonResponse;
-        }
-
-        /**
-         * Convert the {@link InputStream} into a String which contains the
-         * whole JSON response from the server.
-         */
-        private String readFromStream(InputStream inputStream) throws IOException {
-            StringBuilder output = new StringBuilder();
-            if (inputStream != null) {
-                InputStreamReader inputStreamReader = new InputStreamReader(inputStream, Charset.forName("UTF-8"));
-                BufferedReader reader = new BufferedReader(inputStreamReader);
-                String line = reader.readLine();
-                while (line != null) {
-                    output.append(line);
-                    line = reader.readLine();
-                }
-            }
-            return output.toString();
-        }
-
-        /**
-         * Return an {@link Football} object by parsing out information
-         * about the first earthquake from the input earthquakeJSON string.
-         */
-        private Football extractFeatureFromJson(String footballJSON) {
-            //If the JSON string is empty or null, then return early.
-            if (TextUtils.isEmpty(footballJSON)) {
-                return null;
-            }
-            try {
-                JSONObject baseJsonResponse = new JSONObject(footballJSON);
-                JSONArray featureArray = baseJsonResponse.getJSONArray("features");
-
-                // If there are results in the features array
-                if (featureArray.length() > 0) {
-                    // Extract out the first feature (which is a piece of news)
-                    JSONObject firstFeature = featureArray.getJSONObject(0);
-                    JSONObject properties = firstFeature.getJSONObject("properties");
-
-                    // Extract out the title, time, and tsunami values
-                    String typeNews = properties.getString("type");
-                    String sectionName = properties.getString("sectionName");
-                    String webTitle = properties.getString("webTitle");
-                    String newsDate = properties.getString("webPublicationDate");
-
-                    // Create a new {@link Event} object
-                    return new Football(typeNews, sectionName, webTitle, newsDate);
-                }
-            } catch (JSONException e) {
-                Log.e(LOG_TAG, "Problem parsing the earthquake JSON results", e);
-            }
-            return null;
-        }
+        return super.onOptionsItemSelected(item);
     }
 }
